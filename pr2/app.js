@@ -48,6 +48,7 @@ app.patch('/products/:id', (req, res)=>{
     res.json(product);
 });
 
+//удаление товара
 app.delete('/products/:id', (req, res) => {
     products = products.filter(u => u.id != req.params.id);
     res.send('Ok');
