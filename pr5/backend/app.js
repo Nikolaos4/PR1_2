@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const { nanoid } = require('nanoid');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 
 // Swagger
 const swaggerJsdoc = require('swagger-jsdoc');
@@ -9,15 +11,19 @@ const swaggerUi = require('swagger-ui-express');
 const app = express();
 const port = 3000;
 
+// Константы для JWT
+const JWT_SECRET = "access_secret";
+const ACCESS_EXPIRES_IN = "15m";
+
 // Middleware
 app.use(express.json());
 app.use(cors({
-  origin: 'http://localhost:3001', // разрешаем запросы с фронтенда
+  origin: 'http://localhost:3001',
   methods: ['GET', 'POST', 'PATCH', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
-// (Опционально) Middleware для логирования запросов
+// Логирование запросов
 app.use((req, res, next) => {
   res.on('finish', () => {
     console.log(`[${new Date().toISOString()}] [${req.method}] ${res.statusCode} ${req.path}`);
@@ -28,7 +34,40 @@ app.use((req, res, next) => {
   next();
 });
 
-// Начальные данные (минимум 10 товаров)
+// ==================== Swagger настройка ====================
+const swaggerOptions = {
+  definition: {
+    openapi: '3.0.0',
+    info: {
+      title: 'API интернет-магазина (с авторизацией)',
+      version: '1.0.0',
+      description: 'Управление товарами + JWT-авторизация',
+    },
+    servers: [
+      {
+        url: `http://localhost:${port}`,
+        description: 'Локальный сервер',
+      },
+    ],
+    components: {
+      securitySchemes: {
+        bearerAuth: {
+          type: 'http',
+          scheme: 'bearer',
+          bearerFormat: 'JWT',
+        },
+      },
+    },
+  },
+  apis: ['./app.js'],
+};
+
+const swaggerSpec = swaggerJsdoc(swaggerOptions);
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+
+// ==================== Данные ====================
+let users = []; // пользователи (email, хеш пароля и т.д.)
+
 let products = [
   { id: nanoid(6), name: 'Ноутбук Lenovo', category: 'Электроника', description: '15.6", Intel Core i5, 8GB RAM', price: 55000, stock: 12 },
   { id: nanoid(6), name: 'Мышь Logitech', category: 'Электроника', description: 'Беспроводная, оптическая', price: 1500, stock: 35 },
@@ -42,31 +81,52 @@ let products = [
   { id: nanoid(6), name: 'Чайник электрический', category: 'Бытовая техника', description: '1.5 л, нержавейка', price: 1800, stock: 6 },
 ];
 
-// ==================== Swagger настройка ====================
-const swaggerOptions = {
-  definition: {
-    openapi: '3.0.0',
-    info: {
-      title: 'API интернет-магазина (товары)',
-      version: '1.0.0',
-      description: 'Простое API для управления товарами',
-    },
-    servers: [
-      {
-        url: `http://localhost:${port}`,
-        description: 'Локальный сервер',
-      },
-    ],
-  },
-  // Путь к файлам с JSDoc-комментариями (текущий файл)
-  apis: ['./app.js'],
-};
+// ==================== Вспомогательные функции ====================
 
-const swaggerSpec = swaggerJsdoc(swaggerOptions);
-// Подключаем Swagger UI по адресу /api-docs
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+// Поиск товара по ID (для маршрутов)
+function findProductOr404(id, res) {
+  const product = products.find(p => p.id === id);
+  if (!product) {
+    res.status(404).json({ error: 'Product not found' });
+    return null;
+  }
+  return product;
+}
 
-// ==================== Схема Product ====================
+// Хеширование пароля
+async function hashPassword(password) {
+  return bcrypt.hash(password, 10);
+}
+
+// Проверка пароля
+async function verifyPassword(password, hash) {
+  return bcrypt.compare(password, hash);
+}
+
+// Поиск пользователя по email
+function findUser(email) {
+  return users.find(u => u.email === email);
+}
+
+// Middleware для проверки JWT
+function authMiddleware(req, res, next) {
+  const header = req.headers.authorization || "";
+  const [scheme, token] = header.split(" ");
+
+  if (scheme !== "Bearer" || !token) {
+    return res.status(401).json({ error: "Missing or invalid Authorization header" });
+  }
+
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    req.user = payload; // { sub: userId, username: email }
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: "Invalid or expired token" });
+  }
+}
+
+// ==================== Схема Product для Swagger ====================
 /**
  * @swagger
  * components:
@@ -82,16 +142,16 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
  *       properties:
  *         id:
  *           type: string
- *           description: Уникальный идентификатор товара (генерируется автоматически)
+ *           description: Уникальный идентификатор товара
  *         name:
  *           type: string
  *           description: Название товара
  *         category:
  *           type: string
- *           description: Категория товара
+ *           description: Категория
  *         description:
  *           type: string
- *           description: Краткое описание товара
+ *           description: Описание
  *         price:
  *           type: number
  *           description: Цена в рублях
@@ -105,26 +165,248 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
  *         description: "15.6\", Intel Core i5, 8GB RAM"
  *         price: 55000
  *         stock: 12
+ *   securitySchemes:
+ *     bearerAuth:
+ *       type: http
+ *       scheme: bearer
+ *       bearerFormat: JWT
  */
 
-// Вспомогательная функция для поиска товара по ID
-function findProductOr404(id, res) {
-  const product = products.find(p => p.id === id);
-  if (!product) {
-    res.status(404).json({ error: 'Product not found' });
-    return null;
-  }
-  return product;
-}
+// ==================== Маршруты аутентификации ====================
 
-// ==================== Маршруты ====================
+/**
+ * @swagger
+ * /api/auth/registr:
+ *   post:
+ *     summary: Регистрация нового пользователя
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *               - first_name
+ *               - last_name
+ *               - password
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *               first_name:
+ *                 type: string
+ *               last_name:
+ *                 type: string
+ *               password:
+ *                 type: string
+ *                 format: password
+ *     responses:
+ *       201:
+ *         description: Пользователь создан
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 id:
+ *                   type: string
+ *                 email:
+ *                   type: string
+ *                 first_name:
+ *                   type: string
+ *                 last_name:
+ *                   type: string
+ *                 password:
+ *                   type: string
+ *       400:
+ *         description: Отсутствуют обязательные поля
+ *       409:
+ *         description: Email уже существует
+ */
+app.post("/api/auth/registr", async (req, res) => {
+  const { email, first_name, last_name, password } = req.body;
+
+  if (!email || !first_name || !last_name || !password) {
+    return res.status(400).json({ error: "email, first_name, last_name and password are required" });
+  }
+
+  if (users.some(u => u.email === email)) {
+    return res.status(409).json({ error: "email already exists" });
+  }
+
+  const newUser = {
+    id: nanoid(),
+    email,
+    first_name,
+    last_name,
+    password: await hashPassword(password)
+  };
+
+  users.push(newUser);
+  res.status(201).json(newUser);
+});
+
+/**
+ * @swagger
+ * /api/auth/login:
+ *   post:
+ *     summary: Вход пользователя
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *               - password
+ *             properties:
+ *               email:
+ *                 type: string
+ *               password:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Успешный вход, возвращается токен
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 accessToken:
+ *                   type: string
+ *       400:
+ *         description: Отсутствуют email или пароль
+ *       401:
+ *         description: Неверный пароль
+ *       404:
+ *         description: Пользователь не найден
+ */
+app.post("/api/auth/login", async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ error: "email and password are required" });
+  }
+
+  const user = findUser(email);
+  if (!user) {
+    return res.status(404).json({ error: "user not found" });
+  }
+
+  const isAuthenticated = await verifyPassword(password, user.password);
+  if (!isAuthenticated) {
+    return res.status(401).json({ error: "not authenticated" });
+  }
+
+  const accessToken = jwt.sign(
+    { sub: user.id, username: user.email },
+    JWT_SECRET,
+    { expiresIn: ACCESS_EXPIRES_IN }
+  );
+  res.json({ accessToken });
+});
+
+/**
+ * @swagger
+ * /api/auth/me:
+ *   get:
+ *     summary: Данные текущего пользователя
+ *     tags: [Auth]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Информация о пользователе
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 id:
+ *                   type: string
+ *                 username:
+ *                   type: string
+ *       401:
+ *         description: Не авторизован
+ *       404:
+ *         description: Пользователь не найден
+ */
+app.get("/api/auth/me", authMiddleware, (req, res) => {
+  const userId = req.user.sub;
+  const user = users.find(u => u.id === userId);
+  if (!user) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  res.json({ id: user.id, username: user.email });
+});
+
+// ==================== Маршруты для товаров ====================
+
+/**
+ * @swagger
+ * /api/products:
+ *   get:
+ *     summary: Получить все товары (доступно без авторизации)
+ *     tags: [Products]
+ *     responses:
+ *       200:
+ *         description: Список товаров
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 $ref: '#/components/schemas/Product'
+ */
+app.get('/api/products', (req, res) => {
+  res.json(products);
+});
+
+/**
+ * @swagger
+ * /api/products/{id}:
+ *   get:
+ *     summary: Получить товар по ID (требуется авторизация)
+ *     tags: [Products]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: ID товара
+ *     responses:
+ *       200:
+ *         description: Данные товара
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Product'
+ *       401:
+ *         description: Не авторизован
+ *       404:
+ *         description: Товар не найден
+ */
+app.get('/api/products/:id', authMiddleware, (req, res) => {
+  const product = findProductOr404(req.params.id, res);
+  if (!product) return;
+  res.json(product);
+});
 
 /**
  * @swagger
  * /api/products:
  *   post:
- *     summary: Создаёт новый товар
+ *     summary: Создать новый товар (требуется авторизация)
  *     tags: [Products]
+ *     security:
+ *       - bearerAuth: []
  *     requestBody:
  *       required: true
  *       content:
@@ -150,15 +432,17 @@ function findProductOr404(id, res) {
  *                 type: integer
  *     responses:
  *       201:
- *         description: Товар успешно создан
+ *         description: Товар создан
  *         content:
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Product'
  *       400:
- *         description: Ошибка в теле запроса (отсутствуют обязательные поля)
+ *         description: Ошибка в запросе
+ *       401:
+ *         description: Не авторизован
  */
-app.post('/api/products', (req, res) => {
+app.post('/api/products', authMiddleware, (req, res) => {
   const { name, category, description, price, stock } = req.body;
   if (!name || !category || !description || price === undefined || stock === undefined) {
     return res.status(400).json({ error: 'Missing required fields' });
@@ -177,66 +461,18 @@ app.post('/api/products', (req, res) => {
 
 /**
  * @swagger
- * /api/products:
- *   get:
- *     summary: Возвращает список всех товаров
- *     tags: [Products]
- *     responses:
- *       200:
- *         description: Список товаров
- *         content:
- *           application/json:
- *             schema:
- *               type: array
- *               items:
- *                 $ref: '#/components/schemas/Product'
- */
-app.get('/api/products', (req, res) => {
-  res.json(products);
-});
-
-/**
- * @swagger
- * /api/products/{id}:
- *   get:
- *     summary: Получает товар по ID
- *     tags: [Products]
- *     parameters:
- *       - in: path
- *         name: id
- *         schema:
- *           type: string
- *         required: true
- *         description: ID товара
- *     responses:
- *       200:
- *         description: Данные товара
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Product'
- *       404:
- *         description: Товар не найден
- */
-app.get('/api/products/:id', (req, res) => {
-  const product = findProductOr404(req.params.id, res);
-  if (!product) return;
-  res.json(product);
-});
-
-/**
- * @swagger
  * /api/products/{id}:
  *   patch:
- *     summary: Обновляет данные товара (частичное обновление)
+ *     summary: Частичное обновление товара (требуется авторизация)
  *     tags: [Products]
+ *     security:
+ *       - bearerAuth: []
  *     parameters:
  *       - in: path
  *         name: id
+ *         required: true
  *         schema:
  *           type: string
- *         required: true
- *         description: ID товара
  *     requestBody:
  *       required: true
  *       content:
@@ -263,10 +499,12 @@ app.get('/api/products/:id', (req, res) => {
  *               $ref: '#/components/schemas/Product'
  *       400:
  *         description: Нет данных для обновления
+ *       401:
+ *         description: Не авторизован
  *       404:
  *         description: Товар не найден
  */
-app.patch('/api/products/:id', (req, res) => {
+app.patch('/api/products/:id', authMiddleware, (req, res) => {
   const product = findProductOr404(req.params.id, res);
   if (!product) return;
 
@@ -288,22 +526,25 @@ app.patch('/api/products/:id', (req, res) => {
  * @swagger
  * /api/products/{id}:
  *   delete:
- *     summary: Удаляет товар по ID
+ *     summary: Удалить товар (требуется авторизация)
  *     tags: [Products]
+ *     security:
+ *       - bearerAuth: []
  *     parameters:
  *       - in: path
  *         name: id
+ *         required: true
  *         schema:
  *           type: string
- *         required: true
- *         description: ID товара
  *     responses:
  *       204:
- *         description: Товар успешно удалён (нет тела ответа)
+ *         description: Товар удалён
+ *       401:
+ *         description: Не авторизован
  *       404:
  *         description: Товар не найден
  */
-app.delete('/api/products/:id', (req, res) => {
+app.delete('/api/products/:id', authMiddleware, (req, res) => {
   const id = req.params.id;
   const exists = products.some(p => p.id === id);
   if (!exists) return res.status(404).json({ error: 'Product not found' });
@@ -312,12 +553,11 @@ app.delete('/api/products/:id', (req, res) => {
   res.status(204).send();
 });
 
-// Обработка 404 для несуществующих маршрутов
+// ==================== Обработка ошибок и 404 ====================
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found' });
 });
 
-// Глобальный обработчик ошибок
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
   res.status(500).json({ error: 'Internal server error' });

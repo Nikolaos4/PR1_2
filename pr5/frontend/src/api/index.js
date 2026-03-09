@@ -1,47 +1,58 @@
 import axios from 'axios';
 
-// Создаём экземпляр axios с предварительно настроенными параметрами
 const apiClient = axios.create({
-  // Базовый URL нашего бэкенда (все запросы будут начинаться с него)
   baseURL: 'http://localhost:3000/api',
-  // Заголовки по умолчанию – указываем, что работаем с JSON
   headers: {
     'Content-Type': 'application/json',
     'accept': 'application/json',
   },
 });
 
-// Объект, содержащий методы для работы с API
+// Перехватчик запросов: добавляет токен, если он есть в localStorage
+apiClient.interceptors.request.use((config) => {
+  const token = localStorage.getItem('accessToken');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+}, (error) => Promise.reject(error));
+
 export const api = {
-  // Получить все товары
+  // существующие методы getProducts, createProduct и т.д.
   getProducts: async () => {
-    // Выполняем GET-запрос к /products
     const response = await apiClient.get('/products');
-    // Возвращаем только данные из ответа (response.data содержит тело ответа)
     return response.data;
   },
-  
-  // Получить один товар по его ID
   getProductById: async (id) => {
     const response = await apiClient.get(`/products/${id}`);
     return response.data;
   },
-
-  // Создать новый товар
   createProduct: async (product) => {
     const response = await apiClient.post('/products', product);
     return response.data;
   },
-
-  // Обновить существующий товар
   updateProduct: async (id, product) => {
     const response = await apiClient.patch(`/products/${id}`, product);
     return response.data;
   },
-
-  // Удалить товар по ID
   deleteProduct: async (id) => {
     const response = await apiClient.delete(`/products/${id}`);
-    return response.data; // в случае 204 вернётся пустой объект
+    return response.data;
   },
+  // новые методы для аутентификации
+  login: async (email, password) => {
+    const response = await apiClient.post('/auth/login', { email, password });
+    return response.data;
+  },
+  register: async (userData) => {
+    const response = await apiClient.post('/auth/registr', userData);
+    return response.data;
+  },
+  getMe: async () => {
+    const response = await apiClient.get('/auth/me');
+    return response.data;
+  }
 };
+
+// Также экспортируем сам apiClient на случай, если понадобится
+export { apiClient };

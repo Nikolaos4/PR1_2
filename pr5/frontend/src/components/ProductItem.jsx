@@ -1,8 +1,6 @@
 import React from 'react';
 
-// Компонент, отображающий одну карточку товара
-// Принимает пропсы: product (объект товара), onEdit (функция для редактирования), onDelete (функция для удаления)
-export default function ProductItem({ product, onEdit, onDelete }) {
+export default function ProductItem({ product, onEdit, onDelete, canEdit }) {
   return (
     <div className="productRow">
       <div className="productMain">
@@ -13,10 +11,12 @@ export default function ProductItem({ product, onEdit, onDelete }) {
         <div className="productPrice">{product.price} ₽</div>
         <div className="productStock">Осталось: {product.stock}</div>
       </div>
-      <div className="productActions">
-        <button className="btn" onClick={() => onEdit(product)}>Редактировать</button>
-        <button className="btn btn--danger" onClick={() => onDelete(product.id)}>Удалить</button>
-      </div>
+      {canEdit && (
+        <div className="productActions">
+          <button className="btn" onClick={() => onEdit(product)}>Редактировать</button>
+          <button className="btn btn--danger" onClick={() => onDelete(product.id)}>Удалить</button>
+        </div>
+      )}
     </div>
   );
 }
